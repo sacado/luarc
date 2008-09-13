@@ -1,0 +1,58 @@
+This is Luarc, an implementation of Arc's web server.
+
+Arc is Paul Graham's new Lisp dialect. It embeds an excellent web server, based on continuation-passing style. Luarc is just a reimplementation of Paul Graham (and other Arc contributors) 's web server code in the Lua language, with the luasocket extension.
+
+I wanted to see how a language close to Scheme but missing macros as Lua could be used to implement code written primarily for Arc and using extensively macros. I also wanted to make a more CPU and memory efficient implementation of Arc's web server. When started, the server only consumes less than 300 kb on my machine. 
+
+As for now, everything is not implemented, the server is single-threaded (i.e. only one request at a time can be treated) and the code certainly contains a few bugs (particularily a few memory leaks), but that should be addressed in the next revisions.
+
+To run it, just run "lua app.lua" and check http://localhost:8080 .
+
+
+
+THE ARC CHALLENGE WITH LUARC
+
+
+The Arc challenge, as described by the language's author, is the following :
+
+"Write a program that causes the url said (e.g. http://localhost:port/said) to produce a page with an input field and a submit button. When the submit button is pressed, that should produce a second page with a single link saying "click here." When that is clicked it should lead to a third page that says "you said: ..." where ... is whatever the user typed in the original input field. The third page must only show what the user actually typed. I.e. the value entered in the input field must not be passed in the url, or it would be possible to change the behavior of the final page by editing the url.
+
+[...]
+
+Here's the answer in Arc:
+
+(defop said req
+  (aform [w/link (pr "you said: " (arg _ "foo"))
+           (pr "click here")]
+    (input "foo") 
+    (submit)))
+"
+
+With Luarc, my favorite answer (as for now) is
+
+defop ('said', function ()
+  local f = function (req)
+    w_link ("Click here", function () client:send (string.format ("You said : %s", req.args.foo)) end)
+  end
+
+  aform (f, function () input ("foo"); submit () end)
+end)
+
+It is less compact, mainly because of the lack of macros, but still interesting and quite readable.
+
+
+
+CONTACT
+
+
+my e-mail is sacado.sacado AT gmail.com
+
+
+
+LINKS
+
+
+Arc : http://arclanguage.org
+Lua : http://lua.org
+Luasocket : http://www.tecgraf.puc-rio.br/~diego/professional/luasocket
+
