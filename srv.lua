@@ -39,14 +39,6 @@ function serve (port)
 end
 
 
---function serve1 (port)
-  --port = port or 8080
-
-  --local s = socket.bind('127.0.0.1', port)
-  --handle_request(s)
---end
-      
-
 srv_noisy = false
 
 requests      = 0
@@ -295,7 +287,7 @@ function parseurl (s)
   local toks       = tokens(s)
   local type, url  = toks[1], toks[2]
   local tokurl     = tokens (url, '?')
-  local base, args = tokurl[1], tokurl[2]
+  local base, args = tokurl[1], tokurl[2] or ""
   local parsedargs = args and parseargs(args)
 
   return string.lower(type), string.sub (base, 2), parsedargs

@@ -31,8 +31,6 @@ hexreps = {}
 function tag (spec, body)
   local body = body or function () end
 
-  print ("tag", client, spec, body)
-
   start_tag (spec)
   body ()
   end_tag (spec)
