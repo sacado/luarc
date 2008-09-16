@@ -27,7 +27,8 @@ function serve (port)
   quitsrv = false
   ensure_srvinstall()
 
-  local s = socket.bind('127.0.0.1', port)
+  local s, err = socket.bind('127.0.0.1', port)
+  assert (s, err)
   print ("Ready to serve port", port)
   currsock = s
 
@@ -45,28 +46,30 @@ requests      = 0
 requests_ip   = {}
 throttle_ips  = {}
 throttle_time = 30
+client        = nil
 
 function handle_request (s, life)
+  assert (s)
   local life = life or threadlife
 
   client          = s:accept()
   local ip        = client:getpeername()
   requests        = requests + 1
   requests_ip[ip] = (requests_ip[ip] or 0 ) + 1
-  local ok, err   = pcall (function () handle_request_thread () end)
+  --local ok, err   = pcall (function () handle_request_thread () end)
   
-  if not ok then
-    print (err)
-    respond_err (500, "Internal server error")
-  end
-  --handle_request_thread()
+  --if not ok then
+    --print (err)
+    --respond_err (500, "Internal server error.")
+  --end
+  handle_request_thread()
 end
 
 
 function handle_request_thread ()
   local newlines  = 0
   local lines     = {} 
-  local line      = "" 
+  local line      = {} 
   local responded = false
   local ip        = client:getpeername()
   local c         = client:receive(1)
@@ -91,13 +94,13 @@ function handle_request_thread ()
         end
 
       else -- newlines < 2
-        table.insert (lines, line)
-        line = "" 
+        table.insert (lines, table.concat(line))
+        line = {}
       end
 
     else
       if c ~= '\r' then
-        line     = string.concat (line, c)
+        table.insert (line, c)
         newlines = 0
       end
     end
@@ -106,18 +109,16 @@ function handle_request_thread ()
   end -- while
 
   client:close ()
+  client = nil
   harvest_fnids()
 end
+
 
 rdheader      = "HTTP/1.0 302 Moved"
 srvops        = {}
 redirector    = {}
-optimes       = {}
-statuscodes   = {}
-statuscodes[200] = "OK"
-statuscodes[302] = "Moved Temporarily"
-statuscodes[404] = "Not Found"
-statuscodes[500] = "Internal Server Error"
+statuscodes   = {[200] = "OK", [302] = "Moved Temporarily",
+                 [404] = "Not Found", [500] = "Internal Server Error"}
 ext_mimetypes = {gif = "image/gif", jpg = "image/jpeg", png = "image/png", ico = "image/x-icon",
                  css = "text/css", pdf = "application/pdf", swf = "application/x-shockwave-flash"}
 textmime      = "text/html; charset=utf-8"
@@ -136,25 +137,20 @@ function err_header (code)
 end
 
 
-function save_optime (name, elapsed)
-  optimes[name] = optimes[name] or {}
-
-  if #optimes[name] < 1000 then
-    table.insert (optimes[name], elapsed)
-  end
-end
-
 -- For ops that want to add their own headers.  They must thus remember 
 -- to prn a blank line before anything meant to be part of the page.
 
 function defop_raw (name, body)
   srvops[name] = function (req)
-    --local t1  = msec()
-    local res = body (req)
-    --save_optime (name, msec() - t1)
-
-    return res
+    -- return body (req)
+    body(req)
   end
+end
+
+
+function defopr_raw (name, parms, body)
+  redirector[name] = true
+  srvops[name]     = function (parms) body (parms) end
 end
 
 
@@ -163,10 +159,12 @@ function defop (name, body)
 end
 
 
-defop ('toto', function (req)
-  client:send ("Salut!<br/>")
-  client:send (table.tostring (req))
-end)
+-- Defines op as a redirector.  Its retval is new location.
+
+function defopr (name, parm, body)
+  redirector[name] = true
+  defop_raw (name, function (parm) body (parm) end)
+end
 
 
 unknown_msg = "Unknown operator."
@@ -204,8 +202,7 @@ end
 
 
 function file_exists_in_root (file)
-  assert (file)
-  return file ~= "" and file_exists (urldecode (string.concat (rootdir, file)))
+  return file ~= "" and file_exists (urldecode (rootdir..file))
 end
 
 
@@ -233,9 +230,9 @@ end
 
 function respond_file (file, code)
   local code = code or 200
-  local f    = io.open (file)
+  local f    = io.open (urldecode (rootdir..file))
 
-  client:send (string.format ("%s\n", header (filemime (file), code)))
+  client:send (string.format ("%s\n\n", header (filemime (file), code)))
   client:send (f:read('*a'))
   f:close()
 end
@@ -248,20 +245,20 @@ function handle_post (op, n, cooks, ip)
     respond_err (500, "Post request without Content-Length.")
   else
     local n    = tonumber(n)
-    local line = ""
+    local line = {}
     local c    = n > 0 and client:receive(1)
 
     while c do
       if srv_noisy then io.write (c) end
 
-      n    = n - 1
-      line = string.concat (line, c)
-      c    = n > 0 and client:receive(1)
+      n = n - 1
+      table.insert (line, c)
+      c = n > 0 and client:receive(1)
     end
 
     if srv_noisy then io.write ("\n\n") end
 
-    respond (op, parseargs (line), cooks, ip)
+    respond (op, parseargs (table.concat (line)), cooks, ip)
   end
 end
 
@@ -300,26 +297,26 @@ function parseargs (s)
 
   for i, v in ipairs(args) do
     kv = tokens (v, '=')
-    res[kv[1]] = kv[2]
+    res[kv[1]] = kv[2] or ''
   end
 
   return res
 end
 
 
--- I don't urldecode field names or anything in cookies; correct?
-
 function parsecookies (s)
-  local fn_tok_eq = function (_)
-    return tokens (_, '=')
+  local res    = {}
+  local fields = tokens (s, ' ;')
+
+  table.remove (fields, 1)
+
+  for i, v in ipairs (map (function (_) return tokens (_, '=') end, fields)) do
+    res[v[1]] = v[2]
   end
 
-  return map (fn_tok_eq, cdr (tokens (s, {' ', ';'})))
+  return res
 end
 
-
--- *** Warning: does not currently urlencode args, so if need to do
--- that replace v with (urlencode v).
 
 fns         = {}
 fnids       = {}
@@ -336,10 +333,10 @@ function fnid (f)
 end
 
 
--- count on huge (expt 64 10) size of fnid space to avoid clashes
+-- count on huge size of fnid space to avoid clashes
 
 function new_fnid ()
-  local res = rand_string (10)
+  local res = rand_string (15)
 
   if fns[res] then
     return new_fnid()
@@ -374,8 +371,8 @@ function harvest_fnids (n)
     table.pull (fn, timed_fnids)
 
     local nharvest   = n / 10
-    local kill, keep = table.split (reverse (fnids), nharvest)
-    fnids            = reverse (keep)
+    local kill, keep = table.split (fnids, nharvest)
+    fnids            = keep
 
     for i, id in kill do
       fns[id] = nil
@@ -396,6 +393,42 @@ defop_raw ("x", function (req)
 
   if it then
     it (req)
+  else
+    client:send (dead_msg)
+  end
+end)
+
+
+defopr_raw ("y", function (str, req)
+  local it = fns[req.args.fnid]
+
+  if it then
+    it(req)
+  else
+    client:send (dead_msg)
+  end
+end)
+
+
+-- For asynchronous calls; discards the page.  Would be better to tell
+-- the fn not to generate it.
+
+defop_raw ("a", function (str, req)
+  local it = fns[req.args.fnid]
+
+  if it then
+    it(req)
+  else
+    client:send (dead_msg)
+  end
+end)
+
+
+defopr ("r", function (req)
+  local it = fns[req.args.fnid]
+
+  if it then
+    it(req)
   else
     client:send (dead_msg)
   end
@@ -423,7 +456,7 @@ unique_ids = {}
 
 function unique_id (len)
   local len = len or 8
-  local id  = rand_string (math.max(5, len))
+  local id  = rand_string (math.max(10, len))
 
   if unique_ids[id] then
     return unique_id()

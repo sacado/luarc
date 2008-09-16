@@ -9,13 +9,8 @@ function map (f, t)
 end
 
 
-function string.concat (str1, str2)
-  return string.format ("%s%s", str1, str2)
-end
-
-
 function eval (str)
-  return loadstring (string.concat ("return ", str))()
+  return loadstring ("return "..str)()
 end
 
 
@@ -25,17 +20,29 @@ function safe_load_table (filename)
   local file = io.open(filename)
 
   if file then
-    return eval(file:read("*a"))
+    local res = eval(file:read("*a"))
+    file:close()
+    
+    return res
+
   else
     return {}
   end
 end
 
 
+function save_table (t, filename)
+  local f = io.open(filename, "w")
+
+  f:write(table.tostring(t))
+  f:close()
+end
+
+
 function ensure_dir (path)
   -- Ensures that the specified directory exists, and creates it if not yet created
   if not io.open (path, "r") then
-    os.execute (string.format ("mkdir -p %s", path))
+    os.execute ("mkdir -p "..path)
   end
 end
 
@@ -67,35 +74,23 @@ end
 
 
 function tokens (s, sep)
-  if type(sep) == 'table' then
-    for i, v in ipairs (sep) do
-      local s = tokens (s, v)
-    end
+  local sep     = sep or ' '
+  local pattern = string.format ('[^%s]+', sep)
+  local res     = {}
+  local f       = string.gmatch (s, pattern)
+  local match   = f()
 
-    return s
-
-  else
-    local sep     = sep or ' '
-    local pattern = string.format ('[^%s]+', sep)
-    local res     = {}
-    local f       = string.gmatch (s, pattern)
-    local match   = f()
-
-    while match do
-      table.insert (res, match)
-      match = f()
-    end
-
-    return res
+  while match do
+    table.insert (res, match)
+    match = f()
   end
+
+  return res
 end
 
 
--- Very slow !!!
--- should be improved
-
 function urldecode (s)
-  local res = ''
+  local res = {}
   local i   = 1
   local len = string.len(s)
 
@@ -103,43 +98,34 @@ function urldecode (s)
     local cur = string.sub (s, i, i)
 
     if cur == '+' then
-      res = string.concat (res, ' ')
+      table.insert (res, ' ')
       i = i + 1
 
     elseif cur == '%' then
       local code = hex_to_int(string.sub (s, i + 1, i + 2))
-      res        = string.concat (res, string.char(code))
+      table.insert (res, string.char(code))
       i = i + 3
 
     else
-      res = string.concat (res, cur)
+      table.insert (res, cur)
       i = i + 1
     end
   end
 
-  return res
+  return table.concat(res)
 end
 
 
 -- Transforms 2 hex characters into an int
 function hex_to_int (h)
-  local corresp = {a = 10, b = 11, c = 12, d = 13, e = 14, f = 15}
-  local res     = 0
+  local corresp = {["0"] = 0, ["1"] = 1, ["2"] = 2, ["3"] = 3, ["4"] = 4,
+                   ["5"] = 5, ["6"] = 6, ["7"] = 7, ["8"] = 8, ["9"] = 9, 
+                   a = 10, b = 11, c = 12, d = 13, e = 14, f = 15}
   local h       = string.lower(h)
   local h1      = string.sub(h, 1, 1)
   local h2      = string.sub(h, 2, 2)
 
-  if corresp[h2] then
-    res = corresp[h2]
-  else
-    res = tonumber(h2)
-  end
-
-  if corresp[h1] then
-    return res + 16 * corresp[h1]
-  else
-    return res + 16 * tonumber(h1)
-  end
+  return 16 * corresp[h1] + corresp[h2]
 end
 
 
@@ -149,7 +135,6 @@ function file_exists (path)
 
   if f then
     f:close()
-
     return true
   else
     return false
@@ -200,27 +185,65 @@ end
 
 
 function table.tostring (t)
-  local res = ""
+  local res = {'{'}
 
-  for k, v in pairs (t) do
-    res = string.format ("%s\n%s : ", res, k)
-
-    if type(v) == 'table' then
-      res = string.format ("%s%s<br/>", res, table.tostring (v))
+  for k, v in pairs(t) do
+    if type(k) == 'number' then
+      table.insert (res, '['..tostring(k)..']')
+    elseif type(k) == 'string' then
+      table.insert (res, '["'..esc_string(k)..'"]')
     else
-      res = string.format ("%s%s<br/>", res, tostring(v))
+      error("key type not yet implemented : "..type(k))
     end
+
+    table.insert (res, '=')
+
+    if type(v) == 'number' then
+      table.insert (res, tostring(v))
+    elseif type(v) == 'string' then
+      table.insert (res, '"'..esc_string(v)..'"')
+    elseif type(v) == 'table' then
+      table.insert (res, table.tostring(v))
+    else
+      error("value type not yet implemented : "..type(v))
+    end
+
+    table.insert (res, ", ")
   end
 
-  return res
+  table.insert (res, '}')
+
+  return table.concat(res)
+end
+
+
+-- escapes all double quotes from str : "foo" becomes \"foo\"
+function esc_string (str)
+  return string.gsub (str, '"', '\\"')
 end
 
 
 function rand_string (n)
-  local res = ''
+  local res = {}
 
   for i = 1, n do
-    res = string.concat (res, string.char (65 + math.random (26) - 1))
+    table.insert (res, string.char (65 + math.random (26) - 1))
+  end
+
+  return table.concat(res)
+end
+
+
+function seconds ()
+  return os.date ('%s')
+end
+
+
+function keys (t)
+  res = {}
+
+  for k, v in pairs (t) do
+    table.insert (res, k)
   end
 
   return res

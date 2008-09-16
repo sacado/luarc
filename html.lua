@@ -38,7 +38,11 @@ end
 
 
 function start_tag (spec)
-  client:send (string.format ("<%s %s>", spec[1], tag_options (spec)))
+  if type(spec) == 'string' then
+    client:send (string.format ("<%s>", spec))
+  else
+    client:send (string.format ("<%s %s>", spec[1], tag_options (spec)))
+  end
 end
 
 
@@ -51,15 +55,25 @@ end
 
 function tag_options (spec_options)
   local spec = spec_options[1]
-  local res  = ""
+  local res  = {}
 
   for k, v in pairs(spec_options) do
     if k ~= 1 then
-      res = string.concat (res, string.format ("%s='%s' ", k, v))
+      table.insert (res, string.format ("%s='%s' ", k, v))
     end
   end
 
-  return res
+  return table.concat (res)
+end
+
+
+function tr (body)
+  tag ("tr", body)
+end
+
+
+function td (body)
+  tag ("td", body)
 end
 
 
@@ -77,9 +91,15 @@ function br2 ()
 end
 
 
+function prbold (txt)
+  tag ("b", function () client:send (txt) end)
+end
+
+
 function whitepage (body)
-  tag ({"html"}, function ()
-      tag ({"body"}, function () body() end)
+  tag ("html", function ()
+      tag ("title", function () client:send ("Luarc application") end)
+      tag ("body", body)
     end)
 end
 
@@ -94,12 +114,45 @@ function submit (val)
 end
 
 
-function input (name, val, size)
-  tag ({"input", type="text", name=name, value=val or "", size=size or 10})
+function input (name, val, size, type)
+  tag ({"input", type = type or "text", name = name, value = val or "", size = size or 10})
+end
+
+
+function inputs (args)
+  local fn = function (arg)
+    local name, label, len, text = arg[1], arg[2], arg[3], arg[4]
+
+    tr (function ()
+      td (function () client:send (label..":") end)
+
+      if type(len) == "table" then
+        td (function ()
+          textarea (name, len[1], len[2],
+                    function () if text then client:send (text) end end)
+        end)
+      else
+        td (function ()
+          local type = (label == "password" and label) or "text"
+          input (name, text, len, type)
+        end)
+      end
+    end)
+  end
+
+  tag ({"table", border = 0}, function () for i, arg in ipairs(args) do fn(arg) end end)
 end
 
 
 function link (text, dest)
   tag ({"a", href = dest or ""}, function () client:send(text) end)
+end
+
+
+function pagemessage (text)
+  if text then
+    client:send (text)
+    br2()
+  end
 end
 
