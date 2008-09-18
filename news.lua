@@ -3,14 +3,16 @@
 -- arc> (nsv)
 -- put usernames of admins, separated by whitespace, in arc/admins
 
+
+loadfile ('app.lua')()
+
 this_site   = "My forum"
 site_url    = "http://news.yourdomain.com/"
 parent_url  = "http://yourdomain.com"
-favicon_url = ""
 site_desc   = "What this site is about."  -- for RSS feed
 site_color  = orange
 prefer_url  = true
-rootdir     = "luarc/news_public_html"
+bar         = ' | '
 
 
 function profile (args)
@@ -20,8 +22,6 @@ function profile (args)
   args.auth     = 0
   args.karma    = 1
   args.weight   = .5
-  args.maxvisit = 20
-  args.minaway  = 180
 
   return args
 end
@@ -40,10 +40,10 @@ end
 
 -- Load and Save
 
-newsdir  = "arc/news/"
-storydir = "arc/news/story/"
-profdir  = "arc/news/profile/"
-votedir  = "arc/news/vote/"
+newsdir  = "luarc/news/"
+storydir = "luarc/news/story/"
+profdir  = "luarc/news/profile/"
+votedir  = "luarc/news/vote/"
 
 votes = {}
 profs = {}
@@ -124,7 +124,7 @@ end
 
 stories      = {}
 comments     = {}
-items        = {}
+items        = {stories = {}, comments = {}}
 url_to_story = {}
 maxid        = 0
 initload     = 15000
@@ -147,7 +147,8 @@ function load_items ()
 
   if #ids > 0 then maxid = ids[1] end
 
-  for i, id in firstn (initload, ids) do
+  for i, id in ipairs(ids) do
+    if i == initload then break end
     if i % 100 == 0 then io.write ('.') end
 
     local it = load_item (id)
@@ -163,13 +164,17 @@ end
 
 
 function ensure_topstories ()
+  local f = io.open(newsdir.."topstories")
+
+  if f then
+    ranked_stories = map (item, f:read())
+    f:close()
+  else
+    print "ranking stories."
+    gen_topstories()
+  end
 end
 
-(def ensure-topstories ()
-  (aif (errsafe (readfile1 (+ newsdir* "topstories")))
-       (= ranked-stories* (map item it))
-       (do (prn "ranking stories.")
-           (gen-topstories))))
 
 function astory (i)
   return i.type == "story"
@@ -182,7 +187,7 @@ end
 
 
 function load_item (id)
-  local it = temload (storydir .. id)
+  local it = load_table (storydir .. id)
 
   items[id] = it
   it.id     = id
@@ -221,14 +226,14 @@ end
 -- Checks id is int because people try e.g. item?id=363/blank.php
 
 function safe_item (id)
-  local id = (type(id) == 'string' and saferead (id)) or id
+  local id = tonumber(id)
 
   return ok_id (id) and item (id)
 end
 
 
 function ok_id (id)
-  return exact (id) and id >= 1 and id <= maxid
+  return type(id) == "number" and id >= 1 and id <= maxid
 end
 
 
@@ -257,8 +262,8 @@ function kill (i)
 end
 
 
-function newslog (args)
-  apply (srvlog, "news", args)
+function newslog (...)
+  print ("news", ...)
 end
 
 
@@ -290,7 +295,7 @@ end
 
 
 function user_age (u)
-  return hours_since (uvar (u, created))
+  return hours_since (uvar (u, "created"))
 end
 
 
@@ -303,12 +308,302 @@ end
 
 
 function save_topstories ()
-  writefile1 (map (function (_) return _.id end, firstn (180, ranked_stories)),
-              newsdir .. "topstories")
+  local function id (_) return _.id end
+
+  save_table (map (id, firstn (ranked_stories, 180)), newsdir.."topstories")
 end
 
+
+-- bugged
 
 function rank_stories (n, consider, scorefn)
-  return bestn (n, compare (function (a, b) return a > b end, scorefn, recent_stories (consider)))
+  local recent = recent_stories (consider)
+
+  table.sort (recent, function (a, b) return a > b end)
+
+  return firstn (recent, n)
 end
+
+
+-- The n most recent stories.  Use firstn when add virtual lists.
+
+function recent_stories (n, id)
+  local id  = id or maxid
+  local res = {}
+
+  while #res < n and id >= 1 do
+    local s = item(id)
+
+    if storylike(s) then
+      table.insert (res, s)
+    end
+
+    id = id - 1
+  end
+
+  return res
+end
+
+
+function storylike (i)
+  return i and astory(i)
+end
+
+
+function adjust_rank (s, scorefn)
+  local scorefn = scorefn or frontpage_rank
+
+  insortnew (s, ranked_stories)
+  save_topstories()
+end
+
+
+-- If something rose high then stopped getting votes, its score would
+-- decline but it would stay near the top.  Newly inserted stories would
+-- thus get stuck in front of it. I avoid this by regularly adjusting
+-- the rank of a random top story.
+
+function rerank_random (depth)
+  local depth = depth or 15
+
+  if #ranked_stories > 0 then
+    adjust_rank (rank_stories, math.random (math.min (depth, #ranked_stories)))
+  end
+
+  save_ranked_stories()
+end
+
+
+function topstories (user, n, threshold)
+  local threshold = threshold or front_threshold
+
+  local function test (_)
+    return realscore (_) >= threshold and cansee (user, _)
+  end
+  
+  return  firstn (map (test, ranked_stories), n)
+end
+
+
+-- If had ip of current request could add clause below to make ignore
+-- tighter better, but wait till need to.
+
+function cansee (user, i)
+  if i.deleted then
+    return admin (user)
+  elseif i.dead then
+    return user == i.by or seesdead (user)
+  else
+    return true
+  end
+end
+
+
+function seesdead (user)
+  return (user and uvar (user, "showdead") and not uvar (user, "ignore")) or
+         editor (user)
+end
+
+
+function visible (user, is)
+  return keep (function (_) return cansee (user, _) end, is)
+end
+
+
+function cansee_descendant (user, c)
+  return cansee (user, c) or
+         some (function (_) cansee_descendant (user, item (_)) end, c.kids)
+end
+
+
+function editor (u)
+  return u and (admin (u) or uvar (u, "auth") > 0)
+end
+
+
+function member (u)
+  return u and (admin (u) or uvar (u, "member"))
+end
+
+
+-- Page Layout
+
+up_url   = "grayarrow.gif"
+down_url = "graydown.gif"
+logo_url = "favicon.ico"
+
+
+function minipage (label, body)
+  npage (this_site..bar..label, function ()
+    pagetop ({}, label)
+    trtd (body)
+  end)
+end
+
+
+
+function  npage (title, body)
+  tag ("html", function ()
+    tag ("head", function ()
+      client:send ('<link rel="stylesheet" type="text/css" href="news.css">')
+      client:send ('<link rel="shortcut icon" href="favicon.ico">')
+      tag ("script", votejs)
+      tag ("title", title)
+    end)
+
+    tag ("body", function ()
+      center (function ()
+        tag ({"table", border=0, cellpadding=0, cellspacing=0,
+              width='85%', bgcolor=sand},
+             body)
+      end)
+    end)
+  end)
+end
+
+
+pagefns = {}
+
+
+function fulltop (user, label, title, whence, body)
+  local title = (title and bar..title) or ""
+
+  npage (this_site..title, function ()
+           pagetop ("full", label, title, user, whence)
+           hook ("page", user, label)
+           body()
+         end)
+end
+
+
+function longpage (user, t1, lable, title, whence, body)
+  fulltop (user, lable, title, whence, function ()
+             trtd (body)
+             trtd (function ()
+                     vspace(10)
+                     color_stripe (main_color, user)
+                     br()
+                     center (function ()
+                               hook "longfoot"
+                               admin_bar (user, seconds() - t1, whence)
+                             end)
+                   end)
+           end)
+end
+
+
+votejs = [[
+function byId(id) {
+  return document.getElementById(id);
+}
+
+function vote(node) {
+  var v = node.id.split(/_/);
+  var item = v[1];
+  var score = byId('score_' + item);
+  var newscore = parseInt(score.innerHTML) + (v[0] == 'up' ? 1 : -1);
+  score.innerHTML = newscore + (newscore == 1 ? ' point' : ' points');
+  byId('up_'   + item).style.visibility = 'hidden';
+  byId('down_' + item).style.visibility = 'hidden';
+  var ping = new Image();
+  ping.src = node.href;
+  return false;
+} ]]
+
+sand     = "#f6f6ef"
+textgray = "#828282"
+
+
+function main_color (user)
+  local it = user and uvar (user, "topcolor")
+
+  return (it and hex_to_color(it)) or site_color
+end
+
+
+function pagetop (switch, label, title, user, whence)
+  tr (function ()
+    tdcolor (main_color (user), function ()
+      tag ({"table", border=0, cellpadding=0, cellspacing=0,
+            width="100%", style="padding:2px"},
+           function ()
+             tr (function ()
+               gen_logo()
+               if switch == "full" then
+                 tag ({"td", style="line-height:12pt; height:10px;"},
+                      function ()
+                        spanclass ("pagetop", function ()
+                          tag ("b", function () link (this_site, "news ") end)
+                          hspace (10)
+                          toprow (user, label)
+                        end)
+                 end)
+                 
+                 tag ({"td", style="text-align:right;padding-right:4px;"},
+                      function ()
+                        spanclass ("pagetop",
+                                   function () topright (user, whence) end)
+                      end)
+
+               else
+                 tag ({"td", style="line-height:12pt; height:10px;"},
+                      function ()
+                        spanclass ("pagetop", function () prbold(label) end)
+                      end)
+               end
+             end)
+           end)
+    end)
+  end)
+
+  map (function (_) return _[user] end, pagefns)
+  spacerow (10)
+end
+
+
+function gen_logo ()
+  tag ({"td", style="width:18px;padding-right:4px"}, function ()
+    tag ({"a", href=parent_url}, function ()
+      tag ({"img", src=logo_url, width=18, height=18,
+            style="border:1px white solid;"})
+    end)
+  end)
+end
+
+
+toplabels = {nil, "new", "threads", "comments", "leaders", "*"}
+
+
+-- Doc
+
+defop ("formatdoc", function (req)
+  minipage ("Formatting Options", function ()
+    spanclass ("admin", center (function () widtable (500, formatdoc) end))
+  end)
+end)
+
+formatdoc_url = "formatdoc"
+
+formatdoc = [[
+Blank lines separate paragraphs.
+<p> Text after a blank line that is indented by two or more spaces is
+reproduced verbatim.  (This is intended for code.)
+<p> Text surrounded by asterisks is italicized, if the character after the
+first asterisk isn't whitespace.
+<p> Urls become links, except in the text field of a submission.<br><br>]]
+
+
+newsop_names = nil
+
+function newsop (args)
+  table.insertnew (newsop_names, args[1])
+  opexpand (defop, args)
+end
+
+newsop ("news", function (user) newspage (user) end)
+newsop ("", function (user) newspage (user) end)
+
+
+
+nsv (8181)
 

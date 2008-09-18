@@ -1,7 +1,7 @@
 -- HTTP Server.
 
 socket = require("socket")
-loadfile ("luarc.lua")()
+require "luarc"
 
 arcdir   = "luarc/"
 logdir   = "luarc/logs/"
@@ -9,15 +9,14 @@ rootdir  = "luarc/public_html/"
 quitsrv  = false
  
 -- add the following files to the rootdir to use error pages
-errorpages = {}
-errorpages[404] = "404.html"
-errorpages[500] = "500.html"
+errorpages = {[404] = "404.html", [500] = "500.html"}
 
 -- "Global" client
 -- it's okay as long as the server is single-threaded
 -- be carefull when using coroutines
 -- VERY dangerous when ever using threads
-client = nil
+client  = nil
+threads = {}
 
 serverheader = "Server: LSV/20080912"
 
@@ -29,13 +28,9 @@ function serve (port)
 
   local s, err = socket.bind('127.0.0.1', port)
   assert (s, err)
+
   print ("Ready to serve port", port)
-  currsock = s
-
-  while not quitsrv do
-    handle_request(s)
-  end
-
+  run_threads(s)
   print ("Quit server")
 end
 
@@ -46,23 +41,53 @@ requests      = 0
 requests_ip   = {}
 throttle_ips  = {}
 throttle_time = 30
-client        = nil
 
-function handle_request (s, life)
-  assert (s)
-  local life = life or threadlife
 
-  client          = s:accept()
-  local ip        = client:getpeername()
-  requests        = requests + 1
-  requests_ip[ip] = (requests_ip[ip] or 0 ) + 1
-  --local ok, err   = pcall (function () handle_request_thread () end)
+function run_threads (s)
+  local i = 1
+
+  while not quitsrv do
+    if i > #threads then
+      if #threads == 0 then
+        s:settimeout(nil) -- we have to wait for a client anyway
+      else
+        s:settimeout(0)  -- don't let clients wait
+      end
+
+      handle_request (s:accept())
+      i = 1
+    else
+      local thread  = threads[i]
+      local co      = thread.coroutine
+      client        = thread.client
+      local ok, res = coroutine.resume (co)
+
+      if coroutine.status (co) == "dead" then
+        table.remove (threads, i)
+        pcall (function () client:close() end)
+        client = nil
+        --collectgarbage()
+      else
+        i = i + 1
+      end
+
+      harvest_fnids()
+    end
+  end
+end
+    
+
+function handle_request (client)
+  if client then
+    local ip        = client:getpeername()
+    requests        = requests + 1
+    requests_ip[ip] = (requests_ip[ip] or 0 ) + 1
+
+    client:settimeout(10)
   
-  --if not ok then
-    --print (err)
-    --respond_err (500, "Internal server error.")
-  --end
-  handle_request_thread()
+    local co = coroutine.create (handle_request_thread)
+    table.insert (threads, {coroutine = co, client = client})
+  end
 end
 
 
@@ -72,45 +97,30 @@ function handle_request_thread ()
   local line      = {} 
   local responded = false
   local ip        = client:getpeername()
-  local c         = client:receive(1)
+  local c         = client:receive('*l')
 
   while c do
     if srv_noisy then io.write (c) end
 
-    if c == '\n' then
-      newlines = newlines + 1
-      
-      if newlines == 2 then
-        local type, op, args, n, cooks = parseheader (lines)
-        print ("srv", ip, type, op, cooks)
-        responded = true
+    if c == '' then -- empty line, end of header
+      local type, op, args, n, cooks = parseheader (lines)
+      print ("srv", ip, type, op, cooks)
+      responded = true
 
-        if type == "get" then
-          respond (op, args, cooks, ip)
-        elseif type == "post" then
-          handle_post (op, n, cooks, ip)
-        else
-          respond_err (404, "Unknown request: ", {lines[1]})
-        end
-
-      else -- newlines < 2
-        table.insert (lines, table.concat(line))
-        line = {}
+      if type == "get" then
+        respond (op, args, cooks, ip)
+      elseif type == "post" then
+        handle_post (op, n, cooks, ip)
+      else
+        respond_err (404, "Unknown request: ", {lines[1]})
       end
-
     else
-      if c ~= '\r' then
-        table.insert (line, c)
-        newlines = 0
-      end
+      table.insert (lines, c)
     end
 
-    c = not responded and client:receive(1)
+    coroutine.yield()
+    c = not responded and client:receive('*l')
   end -- while
-
-  client:close ()
-  client = nil
-  harvest_fnids()
 end
 
 
@@ -231,9 +241,19 @@ end
 function respond_file (file, code)
   local code = code or 200
   local f    = io.open (urldecode (rootdir..file))
+  local read = true
 
   client:send (string.format ("%s\n\n", header (filemime (file), code)))
-  client:send (f:read('*a'))
+
+  while read do
+    read = f:read (1024)
+
+    if read then
+      client:send (read)
+      coroutine.yield()
+    end
+  end
+
   f:close()
 end
 
@@ -270,7 +290,7 @@ function respond_err (code, msg, args)
   if file then
     respond_file (file, code)
   else
-    client:send (string.format ("%s\n", err_header(code)))
+    client:send (string.format ("%s\n\n", err_header(code)))
     client:send (msg)
 
     for i, v in ipairs(args) do

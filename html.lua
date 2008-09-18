@@ -29,10 +29,16 @@ hexreps = {}
 
 
 function tag (spec, body)
-  local body = body or function () end
+  local body = body or ""
 
   start_tag (spec)
-  body ()
+
+  if type(body) == "string" then
+    client:send(body)
+  else
+    body ()
+  end
+
   end_tag (spec)
 end
 
@@ -77,6 +83,26 @@ function td (body)
 end
 
 
+function trtd (body)
+  tag ("tr", function () tag ("td", body) end)
+end
+
+
+function tdcolor (color, body)
+  tag ({"td", bgcolor=color}, body)
+end
+
+
+function center (body)
+  tag ("center", body)
+end
+
+
+function spanclass (name, body)
+  tag ({"span", class = name}, body)
+end
+
+
 function br (n)
   local n = n or 1
 
@@ -92,15 +118,25 @@ end
 
 
 function prbold (txt)
-  tag ("b", function () client:send (txt) end)
+  tag ("b", txt)
 end
 
 
 function whitepage (body)
   tag ("html", function ()
-      tag ("title", function () client:send ("Luarc application") end)
+      tag ("title", "Luarc application")
       tag ("body", body)
     end)
+end
+
+
+function spacerow (h)
+ client:send (string.format('<tr style="height:%spx"></tr>', h))
+end
+
+
+function widtable (w, body)
+  tag ({"table", width=w}, function () trtd(body) end)
 end
 
 
@@ -119,17 +155,21 @@ function input (name, val, size, type)
 end
 
 
+function textarea (name, rows, cols, body)
+  tag ({"textarea", name=name, rows=rows, cols=cols}, body)
+end
+
+
 function inputs (args)
   local fn = function (arg)
     local name, label, len, text = arg[1], arg[2], arg[3], arg[4]
 
     tr (function ()
-      td (function () client:send (label..":") end)
+      td (label..":")
 
       if type(len) == "table" then
         td (function ()
-          textarea (name, len[1], len[2],
-                    function () if text then client:send (text) end end)
+          textarea (name, len[1], len[2], text or "")
         end)
       else
         td (function ()
@@ -145,7 +185,7 @@ end
 
 
 function link (text, dest)
-  tag ({"a", href = dest or ""}, function () client:send(text) end)
+  tag ({"a", href = dest or ""}, text)
 end
 
 

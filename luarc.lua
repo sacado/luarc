@@ -173,6 +173,24 @@ function table.split (t, n)
 end
 
 
+function table.contains (t, val)
+  for i, v in ipairs(t) do
+    if v == val then
+      return true
+    end
+  end
+
+  return false
+end
+
+
+function table.insertnew (t, val)
+  if not table.contains (t, val) then
+    table.insert(t, val)
+  end
+end
+
+
 function cdr (l)
   local res = {}
 
@@ -245,6 +263,34 @@ function keys (t)
   for k, v in pairs (t) do
     table.insert (res, k)
   end
+
+  return res
+end
+
+
+function firstn (t, n)
+  local res = {}
+
+  for i = 1, math.min (n, #t) do
+    res[i] = t[i]
+  end
+
+  return res
+end
+
+
+-- WARNING : nothing checked in this function !
+-- be VERY careful with its args
+
+function dir (dirname)
+  local tmp  = os.tmpname()
+
+  os.execute(string.format("ls %s >%s", dirname, tmp))
+
+  local ftmp = io.open (tmp)
+  local res  = tokens (ftmp:read("*a"), "\n")
+  ftmp:close()
+  os.remove(tmp)
 
   return res
 end

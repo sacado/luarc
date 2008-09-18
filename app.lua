@@ -1,8 +1,8 @@
 -- Application Server.  
 
 
-loadfile ('srv.lua')()
-loadfile ('html.lua')()
+require "srv"
+require "html"
 
 hpwfile   = "luarc/hpw"
 adminfile = "luarc/admins"
@@ -36,9 +36,6 @@ logins         = {}
 
 function get_user (req)
   if req and req.cooks and req.cooks.user then
-    print ("user :", req.cooks.user)
-    print ("cookie_to_user :", table.tostring(cookie_to_user))
-    print ("cookie_to_user[user] :", cookie_to_user[req.cooks.user])
     local u = cookie_to_user[req.cooks.user]
     if u then logins[u] = req.ip end
 
@@ -50,7 +47,7 @@ end
 
 
 function mismatch_message()
-  print "Dead link: users don't match."
+  client:send("Dead link: users don't match.")
 end
 
 
@@ -64,7 +61,7 @@ end
 
 
 function admin(u)
-  return u and mem(admins, u)
+  return u and table.contains(admins, u)
 end
 
 
@@ -102,13 +99,10 @@ end
 
 
 function logout_user (user)
-  assert (type(user) == "string")
+  assert (user == nil or type(user) == "string")
 
   if user then
     logins[user] = nil
-
-    print (user, table.tostring(cookie_to_user))
-
     cookie_to_user[user_to_cookie[user]] = nil
     user_to_cookie[user] = nil
 
@@ -118,7 +112,6 @@ end
 
 
 function create_acct (user, pw)
-  print "In there"
   set_pw(user, pw)
 end
 
@@ -130,20 +123,18 @@ end
 
   
 function set_pw (user, pw)
-  print "Here we are"
   hpasswords[user] = pw and shash(pw)
   save_table (hpasswords, hpwfile)
 end
 
 
 function hello_page (user, ip)
-  return whitepage (function () client:send (string.format ("hello %s at %s", user, ip)) end)
+  return whitepage (string.format ("hello %s at %s", user, ip))
 end
 
 
 function w_link (expr, body)
-  tag ({"a", href = flink (function (req) body(req) end)},
-       function () client:send (expr) end)
+  tag ({"a", href = flink (function (req) body(req) end)}, expr)
 end
 
 
@@ -193,10 +184,6 @@ function login_page (switch, msg, afterward, send_pw)
   local msg       = msg or ''
   local afterward = afterward or hello_page
 
-  for k, v in pairs(user_to_cookie) do
-    print (k, v)
-  end
-
   local function login_form ()
     prbold ("Login")
     br2()
@@ -210,6 +197,7 @@ function login_page (switch, msg, afterward, send_pw)
 
         if it then
           logins[it] = req.ip
+          cook_user(it)
           prcookie (user_to_cookie[it])
           f (it, req.ip)
           
@@ -222,14 +210,12 @@ function login_page (switch, msg, afterward, send_pw)
 
     else
       aformh (function (req)
-        print ("user :", get_user(req))
         logout_user (get_user (req))
         local it = good_login (req.args.u, req.args.p, req.ip)
 
-        print ("it", it)
-
         if it then
           logins[it] = req.ip
+          cook_user(it)
           prcookie (user_to_cookie[it])
           client:send("\n\n")
           afterward (it, req.ip)
@@ -371,7 +357,7 @@ defop ('whoami', function (req)
     client:send (it.." at "..req.ip)
   else
     client:send ("You are not logged in. ")
-    w_link ("Log in", function () login_page ("both") () end)
+    w_link ("Log in", function () login_page ("both") end)
     client:send (".")
   end
 end)
@@ -418,13 +404,43 @@ defop ('', function (req)
 end)
 
 
-defop ('said', function ()
+defop ('said', function (req)
   local f = function (req)
     w_link ("Click here", function () client:send (string.format ("You said : %s", req.args.foo)) end)
   end
 
   aform (f, function () input ("foo"); submit () end)
 end)
+
+
+defop ('repl', function (req)
+  if not admin (get_user (req)) then
+    client:send ("Sorry.")
+  else
+    repl()
+  end
+end)
+
+
+function repl (code)
+  aformh (function (req)
+    local code = req.args.code
+
+    if code then
+      local fn, err = loadstring(urldecode(code))
+
+      client:send ("\n\n"..(err or tostring(fn()) or ""))
+    end
+
+    repl ()
+  end,
+  
+  function ()
+    textarea ("code", 10, 80)
+    br()
+    submit ("run")
+  end)
+end
 
 
 math.randomseed(os.date("%s"))
